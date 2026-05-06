@@ -75,6 +75,26 @@ class AppSettingsDesign(
             ) {
                 enabled = !running
             }
+
+            category("HTTP API")
+
+            switch(
+                value = srvStore::httpApiEnabled,
+                icon = R.drawable.ic_baseline_settings,
+                title = "Enable HTTP API",
+                summary = "Enable HTTP API server for remote control"
+            )
+
+            editText(
+                value = { srvStore.httpApiPort.toString() },
+                onChanged = { srvStore.httpApiPort = it.toIntOrNull() ?: 9090 },
+                icon = R.drawable.ic_baseline_view_list,
+                title = "HTTP API Port",
+                summary = { "Port: ${srvStore.httpApiPort} (restart app to apply)" },
+                inputType = 2 // TYPE_CLASS_NUMBER
+            ) {
+                enabled = srvStore.httpApiEnabled
+            }
         }
 
         binding.content.addView(screen.root)

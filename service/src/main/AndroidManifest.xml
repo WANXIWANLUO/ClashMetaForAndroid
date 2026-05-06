@@ -34,6 +34,11 @@
             android:name=".ProfileWorker"
             android:exported="false"
             android:process=":background" />
+        <service
+            android:name=".http.HttpServerService"
+            android:enabled="true"
+            android:exported="false"
+            android:process=":background" />
 
         <provider
             android:name=".FilesProvider"

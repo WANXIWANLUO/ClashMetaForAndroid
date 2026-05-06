@@ -65,4 +65,14 @@ class ServiceStore(context: Context) {
         key = "dynamic_notification",
         defaultValue = true
     )
+
+    var httpApiPort by store.int(
+        key = "http_api_port",
+        defaultValue = 9090
+    )
+
+    var httpApiEnabled by store.boolean(
+        key = "http_api_enabled",
+        defaultValue = false
+    )
 }
