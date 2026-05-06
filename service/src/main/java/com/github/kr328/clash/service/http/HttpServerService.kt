@@ -6,14 +6,15 @@ import android.content.Intent
 import android.os.IBinder
 import com.github.kr328.clash.common.log.Log
 import com.github.kr328.clash.common.constants.Intents
+import com.github.kr328.clash.core.Clash
 import com.github.kr328.clash.service.ProfileManager
 import com.github.kr328.clash.service.ProfileProcessor
 import com.github.kr328.clash.service.model.Profile
-import com.github.kr328.clash.service.remote.IProfileManager
 import com.github.kr328.clash.service.store.ServiceStore
-import com.github.kr328.clash.service.util.pendingDir
+import com.github.kr328.clash.service.util.importedDir
 import kotlinx.coroutines.*
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.ServerSocket
@@ -165,10 +166,19 @@ class HttpServerService : Service(), CoroutineScope by CoroutineScope(Dispatcher
             path == "/api/v1/profiles" && method == "POST" -> handleCreateProfile(body)
             path == "/api/v1/profiles/import" && method == "POST" -> handleImportProfile(body, queryParams)
             path.startsWith("/api/v1/profiles/") && method == "DELETE" -> handleDeleteProfile(path)
-            path.startsWith("/api/v1/profiles/") && method == "GET" && !path.endsWith("/import") -> handleGetProfile(path)
+            path.startsWith("/api/v1/profiles/") && method == "GET" && !path.endsWith("/import") && !path.endsWith("/config") && !path.endsWith("/reload") -> handleGetProfile(path)
             path.startsWith("/api/v1/profiles/") && method == "PUT" -> handleSetActiveProfile(path)
             path == "/api/v1/port" && method == "POST" -> handleSetPort(body)
             path == "/api/v1/help" && method == "GET" -> handleHelp()
+            
+            path.startsWith("/api/v1/profiles/") && path.endsWith("/config") && method == "GET" -> handleGetProfileConfig(path, queryParams)
+            path.startsWith("/api/v1/profiles/") && path.endsWith("/config") && method == "PUT" -> handleUpdateProfileConfig(path, body)
+            path.startsWith("/api/v1/profiles/") && path.endsWith("/reload") && method == "POST" -> handleReloadProfile(path)
+            path.startsWith("/api/v1/profiles/") && path.endsWith("/proxy") && method == "POST" -> handleUpdateProxy(path, body)
+            path == "/api/v1/config/override" && method == "GET" -> handleGetOverride()
+            path == "/api/v1/config/override" && method == "PUT" -> handleSetOverride(body)
+            path == "/api/v1/proxies" && method == "GET" -> handleGetProxies(queryParams)
+            path == "/api/v1/proxy/select" && method == "POST" -> handleSelectProxy(body, queryParams)
             else -> 404 to "{\"error\":\"Not Found\",\"help\":\"Try /api/v1/help\"}"
         }
     }
@@ -314,7 +324,7 @@ class HttpServerService : Service(), CoroutineScope by CoroutineScope(Dispatcher
     private suspend fun handleDeleteProfile(path: String): Pair<Int, String> {
         Log.d(TAG, "Received delete profile request")
         return try {
-            val uuidStr = path.substringAfter("/api/v1/profiles/").substringBefore("/")
+            val uuidStr = path.substringAfter("/api/v1/profiles/").substringBefore("/").substringBefore("/config").substringBefore("/reload")
             val uuid = UUID.fromString(uuidStr)
             
             profileManager.delete(uuid)
@@ -372,6 +382,274 @@ class HttpServerService : Service(), CoroutineScope by CoroutineScope(Dispatcher
         }
     }
 
+    private suspend fun handleGetProfileConfig(path: String, queryParams: Map<String, String>): Pair<Int, String> {
+        Log.d(TAG, "Received get profile config request")
+        return try {
+            val uuidStr = path.substringAfter("/api/v1/profiles/").substringBefore("/config")
+            val uuid = UUID.fromString(uuidStr)
+            
+            val profile = profileManager.queryByUUID(uuid)
+            if (profile != null) {
+                val configFile = importedDir.resolve("$uuid/config.yaml")
+                if (configFile.exists()) {
+                    val configContent = configFile.readText()
+                    200 to """{
+                        "success": true,
+                        "uuid": "$uuid",
+                        "name": "${profile.name}",
+                        "config": ${escapeJsonString(configContent)}
+                    }"""
+                } else {
+                    404 to """{"success":false,"message":"Config file not found"}"""
+                }
+            } else {
+                404 to """{"success":false,"message":"Profile not found"}"""
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting profile config: ${e.message}", e)
+            500 to """{"success":false,"message":"${e.message}"}"""
+        }
+    }
+
+    private suspend fun handleUpdateProfileConfig(path: String, body: String): Pair<Int, String> {
+        Log.d(TAG, "Received update profile config request")
+        return try {
+            val uuidStr = path.substringAfter("/api/v1/profiles/").substringBefore("/config")
+            val uuid = UUID.fromString(uuidStr)
+            
+            val profile = profileManager.queryByUUID(uuid)
+            if (profile != null) {
+                val configFile = importedDir.resolve("$uuid/config.yaml")
+                configFile.parentFile.mkdirs()
+                
+                val configContent = extractJsonString(body, "config") ?: body
+                configFile.writeText(configContent)
+                
+                200 to """{
+                    "success": true,
+                    "uuid": "$uuid",
+                    "name": "${profile.name}",
+                    "message": "Config updated"
+                }"""
+            } else {
+                404 to """{"success":false,"message":"Profile not found"}"""
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating profile config: ${e.message}", e)
+            500 to """{"success":false,"message":"${e.message}"}"""
+        }
+    }
+
+    private suspend fun handleReloadProfile(path: String): Pair<Int, String> {
+        Log.d(TAG, "Received reload profile request")
+        return try {
+            val uuidStr = path.substringAfter("/api/v1/profiles/").substringBefore("/reload")
+            val uuid = UUID.fromString(uuidStr)
+            
+            val profile = profileManager.queryByUUID(uuid)
+            if (profile != null) {
+                profileManager.update(uuid, null)
+                
+                200 to """{
+                    "success": true,
+                    "uuid": "$uuid",
+                    "name": "${profile.name}",
+                    "message": "Profile reloaded"
+                }"""
+            } else {
+                404 to """{"success":false,"message":"Profile not found"}"""
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reloading profile: ${e.message}", e)
+            500 to """{"success":false,"message":"${e.message}"}"""
+        }
+    }
+
+    private suspend fun handleUpdateProxy(path: String, body: String): Pair<Int, String> {
+        Log.d(TAG, "Received update proxy request")
+        return try {
+            val uuidStr = path.substringAfter("/api/v1/profiles/").substringBefore("/proxy")
+            val uuid = UUID.fromString(uuidStr)
+            
+            val profile = profileManager.queryByUUID(uuid)
+            if (profile != null) {
+                val proxyName = extractJsonString(body, "name") ?: ""
+                val proxyType = extractJsonString(body, "type") ?: "vmess"
+                val proxyServer = extractJsonString(body, "server") ?: ""
+                val proxyPort = extractJsonInt(body, "port") ?: 443
+                val proxyUuid = extractJsonString(body, "uuid") ?: ""
+                val proxyAlterId = extractJsonInt(body, "alterId") ?: 0
+                val proxyCipher = extractJsonString(body, "cipher") ?: "auto"
+                val proxyTls = extractJsonBoolean(body, "tls") ?: true
+                val proxyNetwork = extractJsonString(body, "network") ?: "tcp"
+                
+                val configFile = importedDir.resolve("$uuid/config.yaml")
+                if (!configFile.exists()) {
+                    return 404 to """{"success":false,"message":"Config file not found"}"""
+                }
+                
+                var configContent = configFile.readText()
+                
+                val proxySectionStart = configContent.indexOf("proxies:")
+                if (proxySectionStart != -1) {
+                    val newProxy = """
+  - name: "$proxyName"
+    type: $proxyType
+    server: $proxyServer
+    port: $proxyPort
+    uuid: "$proxyUuid"
+    alterId: $proxyAlterId
+    cipher: $proxyCipher
+    tls: $proxyTls
+    network: $proxyNetwork
+""".trimIndent()
+                    
+                    val sectionEnd = findNextSectionEnd(configContent, proxySectionStart + "proxies:".length)
+                    if (sectionEnd != -1) {
+                        configContent = configContent.substring(0, sectionEnd) + newProxy + "\n" + configContent.substring(sectionEnd)
+                    } else {
+                        configContent += newProxy
+                    }
+                    
+                    configFile.writeText(configContent)
+                    
+                    200 to """{
+                        "success": true,
+                        "uuid": "$uuid",
+                        "name": "${profile.name}",
+                        "proxyName": "$proxyName",
+                        "message": "Proxy config updated"
+                    }"""
+                } else {
+                    400 to """{"success":false,"message":"No proxies section found"}"""
+                }
+            } else {
+                404 to """{"success":false,"message":"Profile not found"}"""
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating proxy: ${e.message}", e)
+            500 to """{"success":false,"message":"${e.message}"}"""
+        }
+    }
+
+    private fun handleGetOverride(): Pair<Int, String> {
+        Log.d(TAG, "Received get override request")
+        return try {
+            val persistOverride = Clash.queryOverride(Clash.OverrideSlot.Persist)
+            val sessionOverride = Clash.queryOverride(Clash.OverrideSlot.Session)
+            
+            200 to """{
+                "success": true,
+                "persist": {
+                    "allowLan": ${persistOverride.allowLan},
+                    "ipv6": ${persistOverride.ipv6},
+                    "mode": "${persistOverride.mode}",
+                    "mixedPort": ${persistOverride.mixedPort}
+                },
+                "session": {
+                    "allowLan": ${sessionOverride.allowLan},
+                    "ipv6": ${sessionOverride.ipv6},
+                    "mode": "${sessionOverride.mode}",
+                    "mixedPort": ${sessionOverride.mixedPort}
+                }
+            }"""
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting override: ${e.message}", e)
+            500 to """{"success":false,"message":"${e.message}"}"""
+        }
+    }
+
+    private fun handleSetOverride(body: String): Pair<Int, String> {
+        Log.d(TAG, "Received set override request")
+        return try {
+            val slot = extractJsonString(body, "slot") ?: "persist"
+            val allowLan = extractJsonBoolean(body, "allowLan")
+            val ipv6 = extractJsonBoolean(body, "ipv6")
+            val mode = extractJsonString(body, "mode")
+            val mixedPort = extractJsonInt(body, "mixedPort")
+            
+            val overrideSlot = if (slot.lowercase() == "session") Clash.OverrideSlot.Session else Clash.OverrideSlot.Persist
+            var current = Clash.queryOverride(overrideSlot)
+            
+            if (allowLan != null) current.allowLan = allowLan
+            if (ipv6 != null) current.ipv6 = ipv6
+            if (mixedPort != null) current.mixedPort = mixedPort
+            
+            Clash.patchOverride(overrideSlot, current)
+            
+            200 to """{
+                "success": true,
+                "slot": "$slot",
+                "message": "Override updated"
+            }"""
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting override: ${e.message}", e)
+            500 to """{"success":false,"message":"${e.message}"}"""
+        }
+    }
+
+    private fun handleGetProxies(queryParams: Map<String, String>): Pair<Int, String> {
+        Log.d(TAG, "Received get proxies request")
+        return try {
+            val groupName = queryParams["group"] ?: "Proxy"
+            val group = Clash.queryGroup(groupName, com.github.kr328.clash.core.model.ProxySort.ByLatency)
+            
+            val proxiesJson = group.proxies.joinToString(",", "[", "]") { proxy ->
+                """{"name":"${proxy.name}","type":"${proxy.type}","now":${proxy.now},,"delay":${proxy.delay}}"""
+            }
+            
+            200 to """{
+                "success": true,
+                "group": "$groupName",
+                "type": "${group.type}",
+                "proxies": $proxiesJson
+            }"""
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting proxies: ${e.message}", e)
+            500 to """{"success":false,"message":"${e.message}"}"""
+        }
+    }
+
+    private fun handleSelectProxy(body: String, queryParams: Map<String, String>): Pair<Int, String> {
+        Log.d(TAG, "Received select proxy request")
+        return try {
+            val group = extractJsonString(body, "group") ?: queryParams["group"] ?: "Proxy"
+            val name = extractJsonString(body, "name") ?: queryParams["name"] ?: ""
+            
+            if (name.isEmpty()) {
+                return 400 to """{"success":false,"message":"Proxy name is required"}"""
+            }
+            
+            val success = Clash.patchSelector(group, name)
+            
+            if (success) {
+                200 to """{
+                    "success": true,
+                    "group": "$group",
+                    "name": "$name",
+                    "message": "Proxy selected"
+                }"""
+            } else {
+                400 to """{"success":false,"message":"Failed to select proxy"}"""
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error selecting proxy: ${e.message}", e)
+            500 to """{"success":false,"message":"${e.message}"}"""
+        }
+    }
+
+    private fun findNextSectionEnd(content: String, start: Int): Int {
+        val sections = listOf("proxy-groups:", "rules:", "dns:")
+        var minIndex = -1
+        for (section in sections) {
+            val index = content.indexOf(section, start)
+            if (index != -1 && (minIndex == -1 || index < minIndex)) {
+                minIndex = index
+            }
+        }
+        return minIndex
+    }
+
     private fun handleSetPort(body: String): Pair<Int, String> {
         Log.d(TAG, "Received set port request")
         return try {
@@ -388,8 +666,7 @@ class HttpServerService : Service(), CoroutineScope by CoroutineScope(Dispatcher
     }
 
     private fun handleHelp(): Pair<Int, String> {
-        return 200 to """
-            {
+        return 200 to """{
                 "success": true,
                 "api": "ClashMetaForAndroid HTTP API v1",
                 "endpoints": [
@@ -402,18 +679,26 @@ class HttpServerService : Service(), CoroutineScope by CoroutineScope(Dispatcher
                     {"method": "POST", "path": "/api/v1/profiles", "desc": "Create a new profile", "body": "{\"name\":\"...\",\"type\":\"url|file\",\"source\":\"...\"}"},
                     {"method": "POST", "path": "/api/v1/profiles/import", "desc": "Import and activate config URL", "params": "url=...&name=...&auto=true"},
                     {"method": "GET", "path": "/api/v1/profiles/{uuid}", "desc": "Get profile details"},
+                    {"method": "GET", "path": "/api/v1/profiles/{uuid}/config", "desc": "Get profile YAML config"},
+                    {"method": "PUT", "path": "/api/v1/profiles/{uuid}/config", "desc": "Update profile YAML config", "body": "{\"config\":\"YAML_CONTENT\"}"},
+                    {"method": "POST", "path": "/api/v1/profiles/{uuid}/reload", "desc": "Reload/Update profile"},
+                    {"method": "POST", "path": "/api/v1/profiles/{uuid}/proxy", "desc": "Add or update proxy in config"},
                     {"method": "PUT", "path": "/api/v1/profiles/{uuid}", "desc": "Set profile as active"},
                     {"method": "DELETE", "path": "/api/v1/profiles/{uuid}", "desc": "Delete a profile"},
+                    {"method": "GET", "path": "/api/v1/config/override", "desc": "Get current config overrides"},
+                    {"method": "PUT", "path": "/api/v1/config/override", "desc": "Update config overrides", "body": "{\"slot\":\"persist|session\",\"allowLan\":true,\"ipv6\":false,\"mixedPort\":7890}"},
+                    {"method": "GET", "path": "/api/v1/proxies", "desc": "Get proxy list", "params": "group=PROXY_GROUP_NAME"},
+                    {"method": "POST", "path": "/api/v1/proxy/select", "desc": "Select active proxy", "params": "group=Proxy&name=PROXY_NAME"},
                     {"method": "POST", "path": "/api/v1/port", "desc": "Set HTTP API port", "body": "9090"}
                 ],
                 "examples": [
                     "curl -X POST 'http://localhost:9090/api/v1/start'",
                     "curl -X POST 'http://localhost:9090/api/v1/profiles/import?url=https://example.com/config.yaml&name=MyConfig&auto=true'",
-                    "curl 'http://localhost:9090/api/v1/status'",
-                    "curl -X PUT 'http://localhost:9090/api/v1/profiles/550e8400-e29b-41d4-a716-446655440000'"
+                    "curl -X PUT 'http://localhost:9090/api/v1/config/override' -d '{\"slot\":\"persist\",\"allowLan\":true}' -H 'Content-Type: application/json'",
+                    "curl -X POST 'http://localhost:9090/api/v1/proxy/select?group=Proxy&name=MyProxy'",
+                    "curl -X PUT 'http://localhost:9090/api/v1/profiles/{uuid}/config' -d '{\"config\":\"new yaml content...\"}' -H 'Content-Type: application/json'"
                 ]
-            }
-        """.trimIndent()
+            }"""
     }
 
     private fun extractJsonString(json: String, key: String): String? {
@@ -424,6 +709,22 @@ class HttpServerService : Service(), CoroutineScope by CoroutineScope(Dispatcher
     private fun extractJsonBoolean(json: String, key: String): Boolean? {
         val regex = """"$key"\s*:\s*(true|false)""".toRegex()
         return regex.find(json)?.groupValues?.get(1)?.toBoolean()
+    }
+
+    private fun extractJsonInt(json: String, key: String): Int? {
+        val regex = """"$key"\s*:\s*(\d+)""".toRegex()
+        return regex.find(json)?.groupValues?.get(1)?.toIntOrNull()
+    }
+
+    private fun escapeJsonString(str: String): String {
+        return "\"" + str
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+            .replace("\b", "\\b")
+            .replace("\u000C", "\\f") + "\""
     }
 
     private fun sendResponse(output: OutputStream, code: Int, message: String) {
